@@ -166,7 +166,9 @@ hold off;
 %% Report statistics
 areas = [stats.Area];
 fprintf('Total cells detected: %d\n', num);
-fprintf('Mean area: %.2f px² | Std: %.2f px²\n', mean(areas), std(areas));
+fprintf('Mean area: %.2f px² | Std: %.2f px²\n', mean(areas), std(areas)); %Standard Deviation
+%If all cells have roughly the same area → Std is small
+%If some cells are much bigger/smaller → Std is large
 
 figure('Color','w');
 histogram(areas,20);
