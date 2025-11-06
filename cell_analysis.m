@@ -1,0 +1,176 @@
+function cell_analysis()
+
+% CELL_ANALYSIS — Basic biomedical image analysis demo
+% Steps: load → grayscale → threshold → morphology → labeling → statistics
+
+clc; close all;
+
+%% Load data
+
+[fn, fp] = uigetfile({'*.png;*.jpg;*.tif;*.bmp','Images'}, 'Select a microscopy image');
+if isequal(fn,0), disp('Cancelled.'); return; end
+filepath = fullfile(fp, fn);
+I = imread(filepath);
+fprintf('Opened: %s\n', filepath);
+
+%% Grayscale
+
+if ndims(I) == 3
+    I = rgb2gray(I);
+end
+
+I = im2uint8(mat2gray(I));
+
+%% Thresholding
+% Use Otsu’s method to separate cells (foreground) from background
+
+level = graythresh(I);
+BW = imbinarize(I, level);
+
+% Otsu thresholding (graythresh + imbinarize):
+%   - Computes a single global threshold that best separates foreground and
+%     background by maximizing inter-class variance (assumes bimodal histogram).
+%   - Output: a FULL binary mask (regions), not thin boundaries.
+%   - Great for counting/area measurements, feeding morphology, labeling.
+%
+%   Usage:
+%       level = graythresh(I);     % I should be grayscale, ideally uint8 or normalized
+%       BW    = imbinarize(I, level);
+%
+% Adaptive/local thresholding (uneven illumination):
+%   - Computes a threshold per local window; better when lighting is not uniform.
+%   - Parameter 'Sensitivity' ~ 0..1 (higher → more foreground).
+%
+%   Usage:
+%       BW = imbinarize(I, 'adaptive', 'Sensitivity', 0.45);
+%
+% Post-processing (typical):
+%       BW = imopen(BW,  strel('disk',2));   % remove small bright specks
+%       BW = imclose(BW, strel('disk',3));   % close narrow gaps, connect parts
+%       BW = imfill(BW, 'holes');            % fill cavities inside objects
+%
+% Edge detection (Sobel/Canny) vs Otsu:
+%   - Sobel/Canny → THIN edges (boundaries), good for precise contours
+%                   (Canny adds smoothing + non-max suppression + hysteresis).
+%   - Otsu/Adaptive → SOLID regions (masks), good for counting, area/shape stats.
+%   - You can COMBINE them: make a mask with Otsu/Adaptive, then run Canny
+%     inside the mask to get clean borders and better edge metrics.
+%
+% Quick recipes:
+%   1) Global Otsu:
+%       Iu8  = im2uint8(mat2gray(I));          % normalize to 8-bit if needed
+%       BW   = imbinarize(Iu8, graythresh(Iu8));
+%
+%   2) Adaptive (if uneven lighting):
+%       Iu8  = im2uint8(mat2gray(I));
+%       BW   = imbinarize(Iu8, 'adaptive', 'Sensitivity', 0.45);
+%
+%   3) Combine with morphology:
+%       BW = imopen(BW,  strel('disk',2));
+%       BW = imclose(BW, strel('disk',3));
+%       BW = imfill(BW, 'holes');
+%
+%   4) Canny inside ROI:
+%       Ieq   = adapthisteq(Iu8, 'ClipLimit', 0.015);
+%       Ecan  = edge(imgaussfilt(Ieq,1.2), 'canny', [0.05 0.15]);
+%       Eroi  = Ecan & BW;                       % restrict edges to the mask
+%       ratio = 100 * nnz(Eroi) / nnz(BW);       % % edge pixels within ROI
+%
+% Tuning tips:
+%   - If Otsu under-segments (misses objects): try Adaptive with higher Sensitivity.
+%   - If Otsu over-segments (too much foreground): pre-smooth with imgaussfilt, or lower Sensitivity.
+%   - For Canny: increase Gaussian sigma and/or thresholds to suppress spurious edges.
+
+%% Morphological operations
+
+BW = imopen(BW, strel('disk',2));     % remove small noise
+BW = imclose(BW, strel('disk',3));    % fill small gaps
+BW = imfill(BW,'holes');              % fill holes inside cells
+
+% Erosion (imerode): 
+%   Shrinks bright/foreground regions (1s). A pixel stays 1 only if ALL
+%   pixels under the structuring element (SE) are 1. Removes tiny specks,
+%   breaks thin connections, thins object borders.
+%
+% Dilation (imdilate):
+%   Expands bright/foreground regions (1s). A pixel becomes 1 if AT LEAST
+%   ONE pixel under the SE is 1. Fills small gaps, bridges short breaks.
+%
+% Structuring element (SE):
+%   strel('disk', r) creates a disk-shaped neighborhood of radius r pixels.
+%   Larger r ⇒ stronger effect (more aggressive shrink/expand).
+%
+% Combinations you’ll see:
+%   imopen  = erosion followed by dilation
+%             → cleans small bright noise and thin protrusions.
+%   imclose = dilation followed by erosion
+%             → fills narrow gaps/holes, connects nearby parts.
+%   imfill(BW,'holes')
+%             → fills internal holes inside foreground objects.
+%
+% Typical order for cleaning a binary mask BW:
+%   1) Open  (remove tiny bright noise)
+%   2) Close (seal small cracks/bridges)
+%   3) Fill  (fill internal cavities)
+%
+% Tuning tips:
+%   - Start with small radii (disk 2–3). Increase if noise/gaps persist.
+%   - Too large radii may delete small objects (open) or over-connect regions (close).
+%   - Ensure BW is logical: BW = BW > 0;
+
+% Optional: visualize each step to learn the effect
+% figure; 
+% subplot(2,2,1); imshow(BW0); title('Original BW');
+% subplot(2,2,2); imshow(BW1); title('After Open (disk=2)');
+% subplot(2,2,3); imshow(BW2); title('After Close (disk=3)');
+% subplot(2,2,4); imshow(BW3); title('After Fill Holes');
+
+% Where:
+%   BW0 = original mask
+%   BW1 = imopen(BW0,  strel('disk',2));
+%   BW2 = imclose(BW1, strel('disk',3));
+%   BW3 = imfill(BW2, 'holes');
+
+%% Label connected components (cells)
+
+[L, num] = bwlabel(BW);                        % label connected components
+stats = regionprops(L, 'Area','Centroid');     % measure 2 properties
+
+% regionprops(L, ...) measures geometric/intensity properties of labeled regions.
+%   L : label matrix (e.g., from bwlabel or bwconncomp)
+% Common properties:
+%   'Area'       - number of pixels in the region
+%   'Centroid'   - [x, y] coordinates of the region’s center
+%   'BoundingBox'- rectangle enclosing the region
+%   'Perimeter'  - boundary length
+%   'Eccentricity'- elongation measure (0=circle, 1=line)
+% Example:
+%   [L, num] = bwlabel(BW);
+%   stats = regionprops(L, 'Area','Centroid');
+% Access data:
+%   stats(k).Area, stats(k).Centroid
+% Useful for counting, measuring, and labeling segmented objects.
+
+%% Display results
+figure('Color','w','Name','Cell Analysis');
+subplot(1,3,1); imshow(I,[]); title('Original');
+subplot(1,3,2); imshow(BW); title('Binary mask');
+subplot(1,3,3); imshow(label2rgb(L,'jet','k')); title('Labeled Cells');
+hold on;
+for k = 1:num
+    text(stats(k).Centroid(1), stats(k).Centroid(2), num2str(k), 'Color','w','FontSize',8);
+end
+hold off;
+
+
+%% Report statistics
+areas = [stats.Area];
+fprintf('Total cells detected: %d\n', num);
+fprintf('Mean area: %.2f px² | Std: %.2f px²\n', mean(areas), std(areas));
+
+figure('Color','w');
+histogram(areas,20);
+xlabel('Cell area (pixels²)'); ylabel('Frequency');
+title('Cell size distribution');
+
+end
